@@ -300,6 +300,7 @@ app.post(
           reply = "😈 DARE TIME!\n" + randomItem(dares);
         } else if (button === "quiz") {
           const quiz = randomItem(quizzes);
+
           reply =
             `🧠 PAKISTAN QUIZ 🇵🇰\n\n${quiz.question}\n\nAnswer: ${quiz.answer}`;
         }
@@ -313,11 +314,13 @@ app.post(
               };
             }
 
-            scores[userId].name = user.nickname || scores[userId].name;
+            scores[userId].name =
+              user.nickname || scores[userId].name;
+
             scores[userId].points += 1;
           }
 
-          // Remove buttons from the original game message.
+          // Update original game message and remove buttons.
           if (messageId && TOKEN) {
             try {
               const update = await fetch(
@@ -329,20 +332,29 @@ app.post(
                     "Content-Type": "application/json"
                   },
                   body: JSON.stringify({
+                    content: "🇵🇰 PAKISTAN COMMUNITY GAME\n\n✅ Challenge completed! Thanks for playing! 🎉",
                     components: []
                   })
                 }
               );
 
+              const result = await update.text();
+
               if (!update.ok) {
                 console.error(
-                  "Could not remove old buttons:",
+                  "Button update failed:",
                   update.status,
-                  await update.text()
+                  result
                 );
+              } else {
+                console.log("Game buttons removed successfully!");
               }
+
             } catch (error) {
-              console.error("Button update error:", error.message);
+              console.error(
+                "Button update error:",
+                error.message
+              );
             }
           }
 
