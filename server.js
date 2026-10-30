@@ -72,6 +72,23 @@ app.post(
   }
 );
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`Pakistan Community Bot running on port ${PORT}`);
+
+  try {
+    const response = await fetch(
+      "https://bots.duckapps.com.br/bot/v1/webhook/verify",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bot ${process.env.DUCKS_BOT_TOKEN}`
+        }
+      }
+    );
+
+    console.log("Verification status:", response.status);
+    console.log(await response.text());
+  } catch (error) {
+    console.error("Verification error:", error.message);
+  }
 });
