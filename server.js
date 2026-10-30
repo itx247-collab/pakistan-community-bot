@@ -665,6 +665,9 @@ app.post(
       const event = JSON.parse(
         req.body.toString("utf8")
       );
+      if (event.type === "command") {
+  console.log("BOT MENTION TEST:", event.data.content);
+      }
 
       // =================================
       // PING
