@@ -7,6 +7,112 @@ const PORT = process.env.PORT || 3000;
 const PUBLIC_KEY =
   "6c96e368eee0944b026356a7a2ede8fefb20e6f16f2b0ebf402e4b131060ce94";
 
+const jokes = [
+  "Teacher: Why are you late? Student: Because of the sign. Teacher: What sign? Student: School Ahead, Go Slow! 😂",
+  "Why did the computer go to the doctor? Because it had a virus! 🤣",
+  "Friend: Are you sleeping? Me: No, I'm just buffering! 😂",
+  "Pakistanis don't need Google Maps. Just ask a nearby uncle! 😁"
+];
+
+const truths = [
+  "What is your funniest childhood memory?",
+  "Who is your favourite person in this group?",
+  "Have you ever told a lie to escape trouble?",
+  "What is your biggest dream?",
+  "What is the most embarrassing thing you've done?",
+  "If you could travel anywhere, where would you go?"
+];
+
+const dares = [
+  "Send your funniest selfie! 😂",
+  "Write a funny sentence without using the letter A.",
+  "Compliment three members of this group.",
+  "Send your favourite emoji 10 times!",
+  "Sing two lines of your favourite song.",
+  "Tell everyone your funniest nickname!"
+];
+
+const quizzes = [
+  {
+    question: "What is the capital of Pakistan?",
+    answer: "Islamabad 🇵🇰"
+  },
+  {
+    question: "Which is the national animal of Pakistan?",
+    answer: "Markhor 🐐"
+  },
+  {
+    question: "When did Pakistan become independent?",
+    answer: "14 August 1947 🇵🇰"
+  },
+  {
+    question: "What is the national language of Pakistan?",
+    answer: "Urdu"
+  },
+  {
+    question: "Which is the highest mountain in Pakistan?",
+    answer: "K2 🏔️"
+  }
+];
+
+function randomItem(array) {
+  return array[Math.floor(Math.random() * array.length)];
+}
+
+function getReply(content) {
+  const parts = content.trim().split(/\s+/);
+  const command = parts[0].toLowerCase();
+
+  switch (command) {
+    case "!help":
+      return `🇵🇰 WELCOME TO PAKISTAN COMMUNITY!
+
+Here are my commands:
+
+!hello - Say hello
+!joke - Get a funny joke
+!truth - Truth game
+!dare - Dare game
+!quiz - Pakistan quiz
+!meme - Funny meme text
+!about - About our community
+!help - Show commands
+
+Let's have fun! 🎉`;
+
+    case "!hello":
+      return "Assalam-o-Alaikum! 👋 Welcome to Pakistan Community! 🇵🇰";
+
+    case "!joke":
+      return "😂 " + randomItem(jokes);
+
+    case "!truth":
+      return "🔥 TRUTH TIME!\n" + randomItem(truths);
+
+    case "!dare":
+      return "😈 DARE TIME!\n" + randomItem(dares);
+
+    case "!quiz": {
+      const quiz = randomItem(quizzes);
+      return `🧠 PAKISTAN QUIZ 🇵🇰\n\n${quiz.question}\n\nThink carefully! The answer is: ${quiz.answer}`;
+    }
+
+    case "!meme":
+      return randomItem([
+        "When someone says 'I'm coming in 5 minutes' but arrives after 2 hours! 😂",
+        "Me: I'll sleep early tonight. Also me at 3 AM: 🤣",
+        "When Wi-Fi stops working in Pakistan: NATIONAL EMERGENCY! 😂",
+        "Monday morning: Battery 1%, Motivation 0%! 😴"
+      ]);
+
+    case "!about":
+      return "🇵🇰 PAKISTAN COMMUNITY 🇵🇰\n\nA place for friendship, entertainment, games, laughter and Pakistani culture!\n\nStay connected. Stay united. ❤️";
+
+    default:
+      return null;
+  }
+}
+
 app.get("/", (req, res) => {
   res.send("Pakistan Community Bot is running! 🇵🇰");
 });
@@ -63,6 +169,19 @@ app.post(
         });
       }
 
+      if (event.type === "command") {
+        const content = event.data.content || "";
+        const reply = getReply(content);
+
+        if (reply) {
+          return res.status(200).json({
+            reply: {
+              content: reply
+            }
+          });
+        }
+      }
+
       return res.sendStatus(200);
 
     } catch (error) {
@@ -88,6 +207,7 @@ app.listen(PORT, async () => {
 
     console.log("Verification status:", response.status);
     console.log(await response.text());
+
   } catch (error) {
     console.error("Verification error:", error.message);
   }
