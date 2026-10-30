@@ -59,6 +59,7 @@ function randomItem(array) {
   return array[Math.floor(Math.random() * array.length)];
 }
 
+
 function getReply(content) {
   const parts = content.trim().split(/\s+/);
   const command = parts[0].toLowerCase();
@@ -171,7 +172,15 @@ app.post(
 
       if (event.type === "command") {
         const content = event.data.content || "";
-        const reply = getReply(content);
+        const game = getComponents(content);
+
+if (game) {
+  return res.status(200).json({
+    reply: game
+  });
+}
+
+const reply = getReply(content);
 
         if (reply) {
           return res.status(200).json({
@@ -182,6 +191,27 @@ app.post(
         }
       }
 
+      if (event.type === "component_click") {
+  const button = event.data.component_id;
+
+  let reply = "";
+
+  if (button === "truth") {
+    reply = "🔥 TRUTH TIME!\n" + randomItem(truths);
+  } else if (button === "dare") {
+    reply = "😈 DARE TIME!\n" + randomItem(dares);
+  } else if (button === "quiz") {
+    const quiz = randomItem(quizzes);
+    reply = "🧠 PAKISTAN QUIZ 🇵🇰\n\n" +
+      quiz.question + "\n\nAnswer: " + quiz.answer;
+  }
+
+  if (reply) {
+    return res.status(200).json({
+      reply: { content: reply }
+    });
+  }
+      }
       return res.sendStatus(200);
 
     } catch (error) {
@@ -203,7 +233,7 @@ app.listen(PORT, async () => {
           Authorization: `Bot ${process.env.DUCKS_BOT_TOKEN}`
         }
       }
-    );
+    );6
 
     console.log("Verification status:", response.status);
     console.log(await response.text());
@@ -212,3 +242,4 @@ app.listen(PORT, async () => {
     console.error("Verification error:", error.message);
   }
 });
+      
