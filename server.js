@@ -562,6 +562,52 @@ async function processCommand(event) {
 
   logAuthorInformation(author);
 
+  // Public bot commands — no mention required
+  const command = content.trim().toLowerCase();
+
+  if (command === "!bot") {
+    await sendRoomMessage(
+      threadId,
+      `🇵🇰 Assalam-o-Alaikum, Pakistan Community!
+
+I'm your Pakistan Community Bot! 😎
+
+🎮 Truth or Dare
+😂 Jokes and Memes
+🧠 Quizzes and Riddles
+🔮 Daily Horoscope
+🌌 Space and Pakistan Facts
+💬 Ask me anything!
+
+Let's make our community awesome! 🇵🇰❤️`
+    );
+    return;
+  }
+
+  if (command === "!bot hello") {
+    await sendRoomMessage(
+      threadId,
+      "Wa-Alaikum-Assalam! 👋🇵🇰 Welcome to Pakistan Community!"
+    );
+    return;
+  }
+
+  if (command === "!bot joke") {
+    await sendRoomMessage(
+      threadId,
+      "😂 Why did the computer go to the doctor? Because it caught a virus!"
+    );
+    return;
+  }
+
+  if (command === "!bot game") {
+    await sendRoomMessage(
+      threadId,
+      "🎮 Let's play! Choose Truth or Dare from !help."
+    );
+    return;
+  }
+
   // Respond only when mentioned.
   if (!content.toLowerCase().includes(BOT_MENTION.toLowerCase())) {
     return;
