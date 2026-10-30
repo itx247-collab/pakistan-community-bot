@@ -59,7 +59,35 @@ function randomItem(array) {
   return array[Math.floor(Math.random() * array.length)];
 }
 
+// Interactive game menu
+function getComponents(content) {
+  if (content.trim().toLowerCase() === "!play") {
+    return {
+      content: "🎮 PAKISTAN COMMUNITY GAME!\nChoose your challenge:",
+      components: [
+        {
+          id: "truth",
+          label: "🔥 Truth",
+          style: "primary"
+        },
+        {
+          id: "dare",
+          label: "😈 Dare",
+          style: "danger"
+        },
+        {
+          id: "quiz",
+          label: "🧠 Quiz",
+          style: "secondary"
+        }
+      ]
+    };
+  }
 
+  return null;
+}
+
+// Existing bot commands
 function getReply(content) {
   const parts = content.trim().split(/\s+/);
   const command = parts[0].toLowerCase();
@@ -75,6 +103,7 @@ Here are my commands:
 !truth - Truth game
 !dare - Dare game
 !quiz - Pakistan quiz
+!play - Interactive games
 !meme - Funny meme text
 !about - About our community
 !help - Show commands
@@ -164,23 +193,26 @@ app.post(
 
       const event = JSON.parse(req.body.toString("utf8"));
 
+      // Verification ping
       if (event.type === "ping") {
         return res.status(200).json({
           nonce: event.data.nonce
         });
       }
 
+      // Command handling
       if (event.type === "command") {
         const content = event.data.content || "";
+
         const game = getComponents(content);
 
-if (game) {
-  return res.status(200).json({
-    reply: game
-  });
-}
+        if (game) {
+          return res.status(200).json({
+            reply: game
+          });
+        }
 
-const reply = getReply(content);
+        const reply = getReply(content);
 
         if (reply) {
           return res.status(200).json({
@@ -191,27 +223,35 @@ const reply = getReply(content);
         }
       }
 
+      // Interactive button handling
       if (event.type === "component_click") {
-  const button = event.data.component_id;
+        const button = event.data.component_id;
 
-  let reply = "";
+        let reply = "";
 
-  if (button === "truth") {
-    reply = "🔥 TRUTH TIME!\n" + randomItem(truths);
-  } else if (button === "dare") {
-    reply = "😈 DARE TIME!\n" + randomItem(dares);
-  } else if (button === "quiz") {
-    const quiz = randomItem(quizzes);
-    reply = "🧠 PAKISTAN QUIZ 🇵🇰\n\n" +
-      quiz.question + "\n\nAnswer: " + quiz.answer;
-  }
+        if (button === "truth") {
+          reply = "🔥 TRUTH TIME!\n" + randomItem(truths);
+        } else if (button === "dare") {
+          reply = "😈 DARE TIME!\n" + randomItem(dares);
+        } else if (button === "quiz") {
+          const quiz = randomItem(quizzes);
 
-  if (reply) {
-    return res.status(200).json({
-      reply: { content: reply }
-    });
-  }
+          reply =
+            "🧠 PAKISTAN QUIZ 🇵🇰\n\n" +
+            quiz.question +
+            "\n\nAnswer: " +
+            quiz.answer;
+        }
+
+        if (reply) {
+          return res.status(200).json({
+            reply: {
+              content: reply
+            }
+          });
+        }
       }
+
       return res.sendStatus(200);
 
     } catch (error) {
@@ -233,7 +273,7 @@ app.listen(PORT, async () => {
           Authorization: `Bot ${process.env.DUCKS_BOT_TOKEN}`
         }
       }
-    );6
+    );
 
     console.log("Verification status:", response.status);
     console.log(await response.text());
@@ -242,4 +282,3 @@ app.listen(PORT, async () => {
     console.error("Verification error:", error.message);
   }
 });
-      
