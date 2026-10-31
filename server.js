@@ -130,7 +130,7 @@ const errorText = await response.text();
 if (response.status === 403) {
   console.log("DUCKS REJECTED MESSAGE:", JSON.stringify({
     status: response.status,
-    content: String(message.content || "").slice(0, 1000),
+    content: String(content || "").slice(0, 1000),
     error: errorText
   }));
 }
