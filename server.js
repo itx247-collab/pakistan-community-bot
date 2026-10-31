@@ -2,120 +2,147 @@ import express from "express";
 import crypto from "node:crypto";
 
 const app = express();
-const PORT = Number(process.env.PORT || 3000);
+const PORT = process.env.PORT || 3000;
 
-const API = "https://bots.duckapps.com.br/bot/v1";
+// =====================================
+// CONFIGURATION
+// =====================================
 
-const TOKEN = process.env.DUCKS_BOT_TOKEN;
+const DUCKS_API =
+  "https://bots.duckapps.com.br/bot/v1";
 
-const SIGNING_HEX =
+const DUCKS_TOKEN =
+  process.env.DUCKS_BOT_TOKEN;
+
+const OPENAI_KEY =
+  process.env.OPENAI_API_KEY;
+
+const OPENAI_MODEL =
+  process.env.OPENAI_MODEL || "gpt-6-luna";
+
+const PUBLIC_KEY =
   process.env.DUCKS_SIGNING_PUBLIC_KEY ||
   "6c96e368eee0944b026356a7a2ede8fefb20e6f16f2b0ebf402e4b131060ce94";
 
-const OPENAI_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+const BOT_MENTION =
+  "@pakistancommuni_f666";
 
-const MENTION = "@pakistancommuni_f666";
+const MEMORY_DURATION =
+  30 * 60 * 1000;
 
-const SPKI = Buffer.from(
-  "302a300506032b6570032100",
-  "hex"
-);
+const MAX_MEMORY_TURNS = 8;
+
+const MAX_BODY_SIZE = "16kb";
+
+// =====================================
+// SIGNATURE VERIFICATION
+// =====================================
 
 const publicKey = crypto.createPublicKey({
   key: Buffer.concat([
-    SPKI,
-    Buffer.from(SIGNING_HEX, "hex")
+    Buffer.from(
+      "302a300506032b6570032100",
+      "hex"
+    ),
+    Buffer.from(PUBLIC_KEY, "hex")
   ]),
   format: "der",
   type: "spki"
 });
 
-const seen = new Map();
-const memory = new Map();
+function verifySignature(headers, rawBody) {
 
-const MAX_BODY = 16 * 1024;
-const EVENT_TTL = 5 * 60 * 1000;
-const MEMORY_TTL = 30 * 60 * 1000;
-const MAX_TURNS = 8;
+  const signature =
+    headers["x-ducks-signature"];
 
-// Clean expired event IDs and conversations.
+  const timestamp =
+    headers["x-ducks-timestamp"];
 
-function prune(map, ttl) {
-  const now = Date.now();
-
-  for (const [key, value] of map) {
-    if (now - value.time > ttl) {
-      map.delete(key);
-    }
+  if (!signature || !timestamp || !rawBody) {
+    return false;
   }
-}
 
-setInterval(() => {
-  prune(seen, EVENT_TTL);
-  prune(memory, MEMORY_TTL);
-}, 60000).unref();
-
-
-// Verify Ducks webhook signature.
-
-function validSignature(headers, raw) {
-  const timestamp = headers["x-ducks-timestamp"];
-  const signature = headers["x-ducks-signature"];
+  const time = Number(timestamp);
 
   if (
-    typeof timestamp !== "string" ||
-    !/^\d{1,12}$/.test(timestamp)
+    !Number.isFinite(time) ||
+    Math.abs(Date.now() / 1000 - time) > 300
   ) {
     return false;
   }
 
-  if (
-    typeof signature !== "string" ||
-    !/^[a-f0-9]{128}$/i.test(signature)
-  ) {
+  if (!/^[a-f0-9]{128}$/i.test(signature)) {
     return false;
   }
 
-  if (
-    Math.abs(Date.now() / 1000 - Number(timestamp)) > 300
-  ) {
-    return false;
-  }
-
-  const signed = Buffer.concat([
+  const signedData = Buffer.concat([
     Buffer.from(timestamp + "."),
-    raw
+    rawBody
   ]);
 
   try {
     return crypto.verify(
       null,
-      signed,
+      signedData,
       publicKey,
       Buffer.from(signature, "hex")
     );
-  } catch {
+  } catch (error) {
+    console.error(
+      "Signature verification error:",
+      error.message
+    );
+
     return false;
   }
 }
 
+// =====================================
+// TEMPORARY MEMORY
+// =====================================
 
-// Small delay helper.
+// Event IDs prevent duplicate processing.
+// Conversation context exists only in RAM.
 
-const wait = ms =>
+const processedEvents = new Map();
+const conversations = new Map();
+
+function cleanMemory() {
+
+  const now = Date.now();
+
+  for (const [key, value] of processedEvents) {
+    if (now - value > 5 * 60 * 1000) {
+      processedEvents.delete(key);
+    }
+  }
+
+  for (const [key, value] of conversations) {
+    if (now - value.time > MEMORY_DURATION) {
+      conversations.delete(key);
+    }
+  }
+}
+
+setInterval(cleanMemory, 60000).unref();
+
+// =====================================
+// DUCKS API
+// =====================================
+
+const sleep = ms =>
   new Promise(resolve => setTimeout(resolve, ms));
 
+async function ducksRequest(path, options = {}) {
 
-// Ducks API request.
-
-async function ducks(path, options = {}) {
-  if (!TOKEN) {
-    throw new Error("DUCKS_BOT_TOKEN is missing");
+  if (!DUCKS_TOKEN) {
+    throw new Error(
+      "DUCKS_BOT_TOKEN is missing"
+    );
   }
 
   const headers = {
-    Authorization: `Bot ${TOKEN}`
+    Authorization: `Bot ${DUCKS_TOKEN}`
   };
 
   let body;
@@ -125,16 +152,19 @@ async function ducks(path, options = {}) {
     body = JSON.stringify(options.body);
   }
 
-  const response = await fetch(API + path, {
-    method: options.method || "GET",
-    headers,
-    body,
-    signal: AbortSignal.timeout(20000)
-  });
+  const response = await fetch(
+    DUCKS_API + path,
+    {
+      method: options.method || "GET",
+      headers,
+      body,
+      signal: AbortSignal.timeout(20000)
+    }
+  );
 
   const text = await response.text();
 
-  let data;
+  let data = {};
 
   try {
     data = text ? JSON.parse(text) : {};
@@ -143,12 +173,16 @@ async function ducks(path, options = {}) {
   }
 
   if (!response.ok) {
+
     const error = new Error(
-      data.message || `Ducks API returned ${response.status}`
+      data.message ||
+      `Ducks API error ${response.status}`
     );
 
     error.status = response.status;
-    error.retryAfter = Number(data.retry_after || 0);
+
+    error.retryAfter =
+      Number(data.retry_after || 0);
 
     throw error;
   }
@@ -156,28 +190,43 @@ async function ducks(path, options = {}) {
   return data;
 }
 
+// =====================================
+// SEND MESSAGE WITH RETRIES
+// =====================================
 
-// Send a message with retry support.
+async function sendMessage(
+  threadId,
+  content,
+  replyTo
+) {
 
-async function sendMessage(threadId, content, replyTo) {
   const nonce = crypto.randomUUID();
 
   let delay = 1000;
 
   for (let attempt = 0; ; attempt++) {
+
     try {
-      return await ducks(
+
+      return await ducksRequest(
         `/rooms/${encodeURIComponent(threadId)}/messages`,
         {
           method: "POST",
+
           body: {
             content,
-            ...(replyTo ? { reply_to: replyTo } : {}),
+
+            ...(replyTo
+              ? { reply_to: replyTo }
+              : {}),
+
             nonce
           }
         }
       );
+
     } catch (error) {
+
       if (
         ![429, 503].includes(error.status) ||
         attempt >= 5
@@ -185,42 +234,51 @@ async function sendMessage(threadId, content, replyTo) {
         throw error;
       }
 
-      const ms = Math.max(
+      const waitTime = Math.max(
         error.retryAfter * 1000,
         delay
       );
 
-      console.warn(
-        `Ducks API ${error.status}; retrying in ${ms}ms`
+      console.log(
+        `Ducks retry in ${waitTime}ms`
       );
 
-      await wait(ms);
+      await sleep(waitTime);
 
-      delay = Math.min(delay * 2, 30000);
+      delay = Math.min(
+        delay * 2,
+        30000
+      );
     }
   }
 }
 
+// =====================================
+// OPENAI AI
+// =====================================
 
-// OpenAI AI response.
+async function askAI(history, question) {
 
-async function getAIAnswer(history, prompt) {
   if (!OPENAI_KEY) {
-    throw new Error("OPENAI_API_KEY is not configured");
+    throw new Error(
+      "OPENAI_API_KEY is missing"
+    );
   }
 
   const input = [
+
     {
       role: "system",
+
       content:
-        "You are Pakistan Community Bot, a friendly and helpful community assistant. Be concise and natural. Understand English, Urdu, and Roman Urdu."
+        "You are Pakistan Community Bot, a friendly and intelligent community assistant. You can speak English, Urdu and Roman Urdu. Be helpful, natural and conversational. Keep answers clear and appropriate for a community."
     },
 
     ...history,
 
     {
       role: "user",
-      content: prompt
+      content: question
     }
   ];
 
@@ -246,274 +304,456 @@ async function getAIAnswer(history, prompt) {
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
+
     throw new Error(
       data.error?.message ||
-      `OpenAI returned ${response.status}`
+      `OpenAI error ${response.status}`
     );
   }
 
   const answer = (data.output || [])
-    .flatMap(x => x.content || [])
-    .filter(x => x.type === "output_text")
-    .map(x => x.text)
+    .flatMap(item => item.content || [])
+    .filter(item => item.type === "output_text")
+    .map(item => item.text)
     .join("\n")
     .trim();
 
   if (!answer) {
-    throw new Error("AI returned an empty response");
+    throw new Error(
+      "AI returned an empty answer"
+    );
   }
 
   return answer.slice(0, 4000);
 }
 
+// =====================================
+// COMMAND HANDLER
+// =====================================
 
-// Recognize bot commands and mentions.
+function getCommand(content) {
 
-function parseMessage(text) {
-  const value = String(text || "").trim();
+  const text = String(content || "").trim();
 
-  if (/^!bot$/i.test(value)) {
-    return { kind: "alive" };
+  if (/^!bot$/i.test(text)) {
+    return {
+      type: "alive"
+    };
   }
 
-  const ask = value.match(/^!ask(?:\s+([\s\S]+))?$/i);
+  const ask = text.match(
+    /^!ask(?:\s+([\s\S]+))?$/i
+  );
 
   if (ask) {
     return {
-      kind: "ai",
-      prompt: (ask[1] || "").trim()
+      type: "ai",
+      question: (ask[1] || "").trim()
     };
   }
 
-  const index = value
+  const mentionIndex = text
     .toLowerCase()
-    .indexOf(MENTION.toLowerCase());
+    .indexOf(BOT_MENTION.toLowerCase());
 
-  if (index >= 0) {
+  if (mentionIndex !== -1) {
+
+    const question = (
+      text.slice(0, mentionIndex) +
+      text.slice(mentionIndex + BOT_MENTION.length)
+    ).trim();
+
     return {
-      kind: "ai",
-
-      prompt: (
-        value.slice(0, index) +
-        value.slice(index + MENTION.length)
-      ).trim()
+      type: "ai",
+      question
     };
   }
 
-  return { kind: "ignore" };
+  return {
+    type: "ignore"
+  };
 }
 
+// =====================================
+// AI MESSAGE PROCESSING
+// =====================================
 
-// Process AI messages in the background.
+async function processAI(event, question) {
 
-async function handleAI(event, prompt) {
-  const d = event.data || {};
+  const data = event.data || {};
 
-  if (!d.thread_id || !d.author?.id) {
+  const threadId = data.thread_id;
+  const messageId = data.message_id;
+  const author = data.author;
+
+  if (!threadId || !author?.id) {
+    console.error(
+      "AI event missing thread or author"
+    );
     return;
   }
 
-  if (!prompt) {
+  if (!question) {
+
     await sendMessage(
-      d.thread_id,
-      "Please write your question after !ask or my mention.",
-      d.message_id
+      threadId,
+      "Please write your question after !ask or mention me.",
+      messageId
     );
 
     return;
   }
 
-  const key =
-    `${d.community_id || "community"}:${d.thread_id}:${d.author.id}`;
+  const memoryKey =
+    `${data.community_id || event.data.community_id || "community"}:${threadId}:${author.id}`;
 
-  const old = memory.get(key);
+  const oldMemory = conversations.get(memoryKey);
 
   const history =
-    old && Date.now() - old.time < MEMORY_TTL
-      ? old.turns
+    oldMemory &&
+    Date.now() - oldMemory.time < MEMORY_DURATION
+      ? oldMemory.turns
       : [];
 
   try {
-    const answer = await getAIAnswer(history, prompt);
 
-    const turns = [
+    console.log("Sending question to AI...");
+
+    const answer = await askAI(
+      history,
+      question
+    );
+
+    const updatedHistory = [
       ...history,
 
       {
         role: "user",
-        content: prompt
+        content: question
       },
 
       {
         role: "assistant",
         content: answer
       }
-    ].slice(-MAX_TURNS * 2);
 
-    memory.set(key, {
+    ].slice(-MAX_MEMORY_TURNS * 2);
+
+    conversations.set(memoryKey, {
       time: Date.now(),
-      turns
+      turns: updatedHistory
     });
 
     await sendMessage(
-      d.thread_id,
+      threadId,
       answer,
-      d.message_id
+      messageId
     );
 
-    console.log("AI reply sent.");
+    console.log("AI answer successfully sent.");
 
   } catch (error) {
-    console.error("AI reply failed:", error.message);
+
+    console.error(
+      "AI processing error:",
+      error.message
+    );
 
     try {
+
       await sendMessage(
-        d.thread_id,
-        "Sorry, I couldn't answer just now. Please try again shortly.",
-        d.message_id
+        threadId,
+        "Sorry! I'm having trouble answering right now. Please try again shortly.",
+        messageId
       );
+
     } catch (sendError) {
+
       console.error(
-        "Could not send error reply:",
+        "Error sending failure message:",
         sendError.message
       );
     }
   }
 }
 
+// =====================================
+// BASIC WEB ROUTES
+// =====================================
 
-// Main pages.
+app.get("/", (req, res) => {
 
-app.get("/", (_req, res) => {
-  res.send("Pakistan Community Bot 3.0 is running.");
+  res.send(
+    "🇵🇰 Pakistan Community Bot 4.0 is running!"
+  );
+
 });
 
+app.get("/health", (req, res) => {
 
-app.get("/health", (_req, res) => {
   res.json({
+
     status: "online",
-    ducksConfigured: Boolean(TOKEN),
+
+    ducksConfigured: Boolean(DUCKS_TOKEN),
+
     openaiConfigured: Boolean(OPENAI_KEY),
+
     model: OPENAI_MODEL
+
   });
+
 });
 
-
-// Ducks webhook.
-// Keep raw body for signature verification.
+// =====================================
+// DUCKS WEBHOOK
+// =====================================
 
 app.post(
   "/webhook",
+
   express.raw({
-    type: "*/*",
-    limit: MAX_BODY
+    type: "application/json",
+    limit: MAX_BODY_SIZE
   }),
 
-  (req, res) => {
-    const raw = Buffer.isBuffer(req.body)
-      ? req.body
-      : Buffer.alloc(0);
-
-    if (!validSignature(req.headers, raw)) {
-      console.warn(
-        "Webhook rejected: signature/timestamp invalid."
-      );
-
-      return res.status(401).end();
-    }
-
-    let event;
+  async (req, res) => {
 
     try {
-      event = JSON.parse(raw.toString("utf8"));
-    } catch {
-      return res.status(400).end();
-    }
 
-    const eventId =
-      req.headers["x-ducks-event-id"] || event.id;
+      const rawBody = req.body;
 
-    if (!eventId) {
-      return res.status(400).end();
-    }
+      if (!Buffer.isBuffer(rawBody)) {
 
-    // Always echo the ping nonce.
+        console.error(
+          "Webhook body was not received as raw bytes"
+        );
 
-    if (event.type === "ping") {
-      return res.status(200).json({
-        nonce: event.data?.nonce
-      });
-    }
+        return res.sendStatus(400);
+      }
 
-    // Ignore duplicate events.
+      // Verify signature before parsing JSON.
 
-    if (seen.has(eventId)) {
-      return res.status(200).json({});
-    }
-
-    seen.set(eventId, {
-      time: Date.now()
-    });
-
-    console.log(`Received event: ${event.type}`);
-
-
-    // Commands.
-
-    if (event.type === "command") {
-      const parsed = parseMessage(
-        event.data?.content
+      const valid = verifySignature(
+        req.headers,
+        rawBody
       );
 
-      // Bot alive command.
+      if (!valid) {
 
-      if (parsed.kind === "alive") {
+        console.error(
+          "Webhook rejected: invalid signature or timestamp"
+        );
+
+        return res.sendStatus(401);
+      }
+
+      const event = JSON.parse(
+        rawBody.toString("utf8")
+      );
+
+      const eventId =
+        req.headers["x-ducks-event-id"] ||
+        event.id;
+
+      console.log(
+        "Verified Ducks event:",
+        event.type
+      );
+
+      // Ping verification.
+
+      if (event.type === "ping") {
+
+        console.log(
+          "Ducks verification ping received"
+        );
+
         return res.status(200).json({
-          reply: {
-            content: "🇵🇰 Bot is Alive! ✅"
-          }
+
+          nonce: event.data?.nonce
+
         });
       }
 
-      // AI commands.
+      // Ignore duplicate events.
 
-      if (parsed.kind === "ai") {
-        res.status(200).json({});
+      if (eventId && processedEvents.has(eventId)) {
 
-        setImmediate(() => {
-          handleAI(event, parsed.prompt);
-        });
+        console.log(
+          "Duplicate event ignored"
+        );
 
-        return;
+        return res.sendStatus(200);
       }
-    }
 
+      if (eventId) {
+        processedEvents.set(
+          eventId,
+          Date.now()
+        );
+      }
 
-    // Button clicks.
+      // =================================
+      // COMMAND EVENTS
+      // =================================
 
-    if (event.type === "component_click") {
-      return res.status(200).json({
-        reply: {
-          content:
-            `Button received: ${String(
-              event.data?.component_id || "button"
-            ).slice(0, 80)}. 🇵🇰`
+      if (event.type === "command") {
+
+        const content =
+          event.data?.content || "";
+
+        console.log(
+          "Command received"
+        );
+
+        const command = getCommand(content);
+
+        // Bot alive.
+
+        if (command.type === "alive") {
+
+          return res.status(200).json({
+
+            reply: {
+
+              content: "🇵🇰 Bot is Alive! ✅"
+
+            }
+
+          });
         }
-      });
+
+        // AI conversation.
+
+        if (command.type === "ai") {
+
+          // Respond to Ducks immediately.
+          // AI processing happens afterward.
+
+          res.status(200).json({});
+
+          setImmediate(() => {
+
+            processAI(
+              event,
+              command.question
+            );
+
+          });
+
+          return;
+        }
+      }
+
+      // =================================
+      // COMPONENT CLICKS
+      // =================================
+
+      if (event.type === "component_click") {
+
+        const componentId =
+          event.data?.component_id || "button";
+
+        return res.status(200).json({
+
+          reply: {
+
+            content:
+              `You selected ${componentId}. 🇵🇰`
+
+          }
+
+        });
+      }
+
+      // =================================
+      // OTHER EVENTS
+      // =================================
+
+      if (
+        event.type === "installed" ||
+        event.type === "rooms_changed" ||
+        event.type === "uninstalled"
+      ) {
+
+        console.log(
+          "Ducks installation event:",
+          event.type
+        );
+      }
+
+      return res.sendStatus(200);
+
+    } catch (error) {
+
+      console.error(
+        "Webhook error:",
+        error.message
+      );
+
+      if (!res.headersSent) {
+        return res.sendStatus(400);
+      }
     }
 
-
-    // Acknowledge other events.
-
-    return res.status(200).json({});
   }
 );
 
+// =====================================
+// START SERVER AND VERIFY WEBHOOK
+// =====================================
 
-// Start server.
+app.listen(PORT, async () => {
 
-app.listen(PORT, () => {
   console.log(
-    `🇵🇰 Pakistan Community Bot 3.0 listening on ${PORT}`
+    `🇵🇰 Pakistan Community Bot 4.0 running on port ${PORT}`
   );
+
+  console.log(
+    "Starting Ducks webhook verification..."
+  );
+
+  try {
+
+    const response = await fetch(
+      `${DUCKS_API}/webhook/verify`,
+
+      {
+
+        method: "POST",
+
+        headers: {
+
+          Authorization:
+            `Bot ${DUCKS_TOKEN}`
+
+        },
+
+        signal: AbortSignal.timeout(15000)
+
+      }
+    );
+
+    console.log(
+      "Webhook verification HTTP status:",
+      response.status
+    );
+
+    const result = await response.text();
+
+    console.log(
+      "Webhook verification result:",
+      result
+    );
+
+  } catch (error) {
+
+    console.error(
+      "Webhook verification failed:",
+      error.message
+    );
+
+  }
+
 });
