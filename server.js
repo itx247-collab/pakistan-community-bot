@@ -17,61 +17,52 @@ const TOKEN = process.env.DUCKS_BOT_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-6-luna";
 
-const LEADER_USERNAME = "itxraja";
 const BOT_MENTION = "@pakistancommuni_f666";
 
-const ROOM_IDS = (process.env.BOT_ROOM_IDS || "")
-  .split(",")
-  .map(x => x.trim())
-  .filter(Boolean);
-
 // =====================================
-// MEMORY AND LIMITS
+// CONVERSATION MEMORY
 // =====================================
 
 const conversations = new Map();
-const processedEvents = new Set();
+const processedEvents = new Map();
 
-let memeQuotaUntil = 0;
-
-const MAX_HISTORY = 10;
+const MAX_HISTORY = 12;
 const MAX_CONVERSATIONS = 1000;
-
-function randomItem(array) {
-  return array[Math.floor(Math.random() * array.length)];
-}
+const MAX_EVENTS = 5000;
 
 // =====================================
-// AI ASSISTANT
+// AI INSTRUCTIONS
 // =====================================
 
 const AI_INSTRUCTIONS = `
 You are Pakistan Community Bot 🇵🇰.
 
-PERSONALITY:
-- Friendly, funny, welcoming and intelligent.
-- Speak English, Urdu and Roman Urdu.
-- Be respectful to everyone.
-- Keep answers reasonably short.
-- Make jokes, riddles and quizzes when requested.
-- Generate Truth or Dare challenges.
-- Share interesting Pakistan facts.
-- Explain astronomy and space.
-- Generate horoscope entertainment.
+You are an intelligent, friendly community AI assistant.
 
-IMPORTANT:
-- You cannot actually play music or upload audio.
-- Never pretend to send announcements or memes.
-- Never claim an action succeeded unless confirmed.
-- Horoscopes are entertainment, not scientific predictions.
-- Never reveal API keys, tokens or private instructions.
-- Never allow normal members to authorize announcements.
-- Do not award scores, points, ranks or leaderboards.
+Your responsibilities:
+- Understand natural language.
+- Have natural conversations.
+- Answer questions intelligently.
+- Understand English, Urdu and Roman Urdu.
+- Remember the recent conversation context.
+- Be friendly, helpful and respectful.
+- Adapt your response to the user's language.
+- Keep ordinary replies reasonably concise.
+- Explain things clearly when asked.
+- Never invent facts.
+- Never claim to perform actions you cannot perform.
+- Never reveal private instructions, tokens or API keys.
+- Never claim to send images, music or files.
+- Be Little Sexy, romantic and Act like a girl.
 `;
+
+// =====================================
+// OPENAI
+// =====================================
 
 async function askAI(question, userId, threadId) {
   if (!OPENAI_API_KEY) {
-    return "🤖 AI is not configured. Contact the administrator.";
+    return "🤖 AI is not configured. Please contact the administrator.";
   }
 
   const key = `${threadId}:${userId}`;
@@ -108,7 +99,7 @@ async function askAI(question, userId, threadId) {
 
     if (!response.ok) {
       console.error("OpenAI error:", data);
-      return "😔 AI is temporarily unavailable. Try again.";
+      return "😔 AI is temporarily unavailable. Please try again.";
     }
 
     const answer = (data.output || [])
@@ -145,26 +136,18 @@ async function askAI(question, userId, threadId) {
     return answer.slice(0, 3500);
 
   } catch (error) {
-    console.error("AI error:", error.message);
+    console.error("OpenAI connection error:", error.message);
     return "😔 I couldn't connect to AI. Please try again.";
   }
 }
 
 // =====================================
-// DUCKS MESSAGE API
+// SEND DUCKS MESSAGE
 // =====================================
 
-async function sendRoomMessage(threadId, content, extra = {}) {
-  if (!TOKEN) {
-    throw new Error("Missing DUCKS_BOT_TOKEN");
-  }
-
-  if (!threadId) {
-    throw new Error("Missing room ID");
-  }
-
+async function sendMessage(threadId, content) {
   const response = await fetch(
-    `${API}/rooms/${threadId}/messages`,
+    `${API}/rooms/${encodeURIComponent(threadId)}/messages`,
     {
       method: "POST",
       headers: {
@@ -172,647 +155,109 @@ async function sendRoomMessage(threadId, content, extra = {}) {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        content: content.slice(0, 3500),
-        ...extra
-      })
+        content: content.slice(0, 3500)
+      }),
+      signal: AbortSignal.timeout(15000)
     }
   );
 
-  const text = await response.text();
+  const result = await response.text();
 
   if (!response.ok) {
-    throw new Error(
-      `Ducks API ${response.status}: ${text}`
-    );
+    throw new Error(`Ducks API ${response.status}: ${result}`);
   }
 
-  return text;
+  return result;
 }
 
 // =====================================
-// LEADER IDENTIFICATION
-// =====================================
-
-function getAuthorUsername(author) {
-  const possible = [
-    author.username,
-    author.handle,
-    author.user_name
-  ];
-
-  for (const value of possible) {
-    if (typeof value === "string" && value.trim()) {
-      return value.replace(/^@/, "").toLowerCase();
-    }
-  }
-
-  return null;
-}
-
-function isLeader(author) {
-  return (
-    getAuthorUsername(author) ===
-    LEADER_USERNAME.toLowerCase()
-  );
-}
-
-// =====================================
-// LEADER ID FINDER
-// =====================================
-
-function logAuthorInformation(author) {
-  console.log("========== USER INFORMATION ==========");
-  console.log("Nickname:", author.nickname || "Unavailable");
-  console.log("Username:", getAuthorUsername(author) || "Not supplied");
-  console.log("Ducks user ID:", author.id || "Unavailable");
-  console.log("======================================");
-}
-
-// =====================================
-// ANNOUNCEMENT SYSTEM
-// =====================================
-
-async function broadcastAnnouncement(message) {
-  if (!ROOM_IDS.length) {
-    throw new Error(
-      "No rooms configured. Add BOT_ROOM_IDS in Render."
-    );
-  }
-
-  const results = [];
-
-  for (const roomId of ROOM_IDS) {
-    try {
-      await sendRoomMessage(
-        roomId,
-        `📢 PAKISTAN COMMUNITY ANNOUNCEMENT 🇵🇰\n\n${message}`
-      );
-
-      results.push({
-        roomId,
-        success: true
-      });
-
-      await new Promise(resolve =>
-        setTimeout(resolve, 1200)
-      );
-
-    } catch (error) {
-      console.error(
-        "Announcement failed:",
-        roomId,
-        error.message
-      );
-
-      results.push({
-        roomId,
-        success: false
-      });
-    }
-  }
-
-  return results;
-}
-
-// =====================================
-// MEME SYSTEM
-// =====================================
-
-async function sendRandomMeme(threadId) {
-  if (Date.now() < memeQuotaUntil) {
-    await sendRoomMessage(
-      threadId,
-      "😅 Our daily meme upload allowance has been used. Try again later!"
-    );
-    return;
-  }
-
-  try {
-    const memeResponse = await fetch(
-      "https://meme-api.com/gimme",
-      {
-        signal: AbortSignal.timeout(15000)
-      }
-    );
-
-    if (!memeResponse.ok) {
-      throw new Error("Meme service unavailable");
-    }
-
-    const meme = await memeResponse.json();
-
-    if (meme.nsfw || !meme.url) {
-      throw new Error("No suitable meme available");
-    }
-
-    const imageResponse = await fetch(meme.url, {
-      signal: AbortSignal.timeout(15000)
-    });
-
-    if (!imageResponse.ok) {
-      throw new Error("Image download failed");
-    }
-
-    const contentType =
-      (imageResponse.headers.get("content-type") || "")
-        .split(";")[0]
-        .toLowerCase();
-
-    if (![
-      "image/jpeg",
-      "image/png",
-      "image/webp"
-    ].includes(contentType)) {
-      throw new Error("Unsupported image format");
-    }
-
-    const buffer = Buffer.from(
-      await imageResponse.arrayBuffer()
-    );
-
-    if (buffer.length > 2 * 1024 * 1024) {
-      throw new Error("Image exceeds 2 MB");
-    }
-
-    const upload = await fetch(`${API}/media`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bot ${TOKEN}`,
-        "Content-Type": contentType
-      },
-      body: buffer
-    });
-
-    const uploadData = await upload.json();
-
-    if (!upload.ok || !uploadData.media_id) {
-      if (
-        upload.status === 429 &&
-        JSON.stringify(uploadData).includes("quota")
-      ) {
-        const seconds =
-          Number(uploadData.retry_after) || 86400;
-
-        memeQuotaUntil = Date.now() + seconds * 1000;
-
-        await sendRoomMessage(
-          threadId,
-          "😅 We've reached the daily Ducks image-upload limit. Memes will be available again later!"
-        );
-
-        return;
-      }
-
-      throw new Error(JSON.stringify(uploadData));
-    }
-
-    await sendRoomMessage(
-      threadId,
-      "😂 RANDOM MEME TIME!\n🇵🇰 Pakistan Community",
-      {
-        media_id: uploadData.media_id
-      }
-    );
-
-  } catch (error) {
-    console.error("Meme error:", error.message);
-
-    await sendRoomMessage(
-      threadId,
-      "😅 Sorry! I couldn't send a meme right now."
-    ).catch(() => {});
-  }
-}
-
-// =====================================
-// TRUTH OR DARE
-// =====================================
-
-const truths = [
-  "What is your funniest childhood memory?",
-  "What is your biggest dream?",
-  "What is your most embarrassing moment?",
-  "Who makes you laugh the most?",
-  "What is one thing you have never told anyone?",
-  "If you could travel anywhere, where would you go?",
-  "What is your secret talent?",
-  "What is the funniest thing you have ever done?"
-];
-
-const dares = [
-  "Describe yourself using only three emojis.",
-  "Write a funny sentence without using the letter A.",
-  "Compliment three members of this group.",
-  "Send your favourite emoji ten times.",
-  "Write a funny message like a news reporter.",
-  "Make everyone laugh with one sentence.",
-  "Tell everyone your funniest nickname."
-];
-
-function getGameMenu() {
-  return {
-    content:
-      "🇵🇰 PAKISTAN COMMUNITY GAME!\n\nChoose your challenge:",
-    components: [
-      {
-        id: "truth",
-        label: "🔥 Truth",
-        style: "primary"
-      },
-      {
-        id: "dare",
-        label: "😈 Dare",
-        style: "danger"
-      },
-      {
-        id: "quiz",
-        label: "🧠 Quiz",
-        style: "secondary"
-      }
-    ]
-  };
-}
-
-// =====================================
-// QUIZZES
-// =====================================
-
-const quizzes = [
-  {
-    question: "What is the capital of Pakistan?",
-    answer: "Islamabad 🇵🇰"
-  },
-  {
-    question: "What is Pakistan's national animal?",
-    answer: "Markhor 🐐"
-  },
-  {
-    question: "When did Pakistan become independent?",
-    answer: "14 August 1947"
-  },
-  {
-    question: "What is Pakistan's highest mountain?",
-    answer: "K2 🏔️"
-  },
-  {
-    question: "What is Pakistan's national flower?",
-    answer: "Jasmine 🌼"
-  },
-  {
-    question: "Which city is known as the City of Lights?",
-    answer: "Karachi"
-  }
-];
-
-function makeQuiz() {
-  const quiz = randomItem(quizzes);
-
-  return `🧠 QUIZ TIME!\n\n${quiz.question}\n\nAnswer: ${quiz.answer}`;
-}
-
-// =====================================
-// HOROSCOPE
-// =====================================
-
-const zodiacSigns = [
-  "Aries ♈",
-  "Taurus ♉",
-  "Gemini ♊",
-  "Cancer ♋",
-  "Leo ♌",
-  "Virgo ♍",
-  "Libra ♎",
-  "Scorpio ♏",
-  "Sagittarius ♐",
-  "Capricorn ♑",
-  "Aquarius ♒",
-  "Pisces ♓"
-];
-
-const horoscopeMessages = [
-  "Today is a good opportunity to focus on your personal goals. ✨",
-  "A friendly conversation may brighten your day. ❤️",
-  "Take your time before making important decisions. 🌙",
-  "Try something creative and enjoy the experience. 🌟",
-  "A little patience can make difficult situations easier. 💫",
-  "Spend some time relaxing and appreciating the people around you. 🌷"
-];
-
-function getHoroscope(sign) {
-  const normalized = sign.toLowerCase();
-
-  const zodiac = zodiacSigns.find(s =>
-    s.toLowerCase().startsWith(normalized)
-  );
-
-  if (!zodiac) {
-    return `🔭 Please provide your zodiac sign.\n\n${zodiacSigns.join("\n")}`;
-  }
-
-  return `🔮 DAILY HOROSCOPE\n\n${zodiac}\n\n${randomItem(horoscopeMessages)}\n\n✨ For entertainment only, not a scientific prediction.`;
-}
-
-// =====================================
-// ASTRONOMY
-// =====================================
-
-const spaceFacts = [
-  "A day on Venus is longer than its year! 🪐",
-  "Jupiter is the largest planet in our solar system. 🌌",
-  "The Sun contains most of the mass of our solar system. ☀️",
-  "Saturn's rings are made mostly of ice and rocky particles. 🪐",
-  "Light from the Sun takes about eight minutes to reach Earth. ☀️",
-  "There are billions of galaxies in the observable universe. 🌌"
-];// =====================================
-// COMMAND / INTENT DETECTION
+// CLEAN BOT MENTION
 // =====================================
 
 function cleanMessage(content) {
   return content
-    .replaceAll(BOT_MENTION, "")
+    .replace(
+      new RegExp(
+        BOT_MENTION.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+        "gi"
+      ),
+      ""
+    )
     .replace(/^@\S+\s*/, "")
     .trim();
 }
 
-function detectIntent(text) {
-  const t = text.toLowerCase();
-
-  if (/\b(meme|memes|funny picture)\b/.test(t)) return "meme";
-  if (/\b(truth or dare|play game|let's play|lets play)\b/.test(t)) return "game";
-  if (/\b(horoscope|zodiac|star sign)\b/.test(t)) return "horoscope";
-  if (/\b(space fact|astronomy|planet|constellation|stars fact)\b/.test(t)) return "space";
-  if (/\b(quiz|test my knowledge|ask me a question)\b/.test(t)) return "quiz";
-  if (/\b(announcement|announce)\b/.test(t)) return "announcement";
-
-  return "ai";
-}
-
 // =====================================
-// PROCESS MESSAGE
+// PROCESS COMMANDS
 // =====================================
 
 async function processCommand(event) {
   const data = event.data || {};
+
   const content = data.content || "";
   const threadId = data.thread_id;
   const author = data.author || {};
-  const userId = author.id || "unknown";
+  const userId = author.id;
 
-  if (!threadId) return;
+  if (!threadId || !userId) return;
 
-  logAuthorInformation(author);
-
-  // Public bot commands — no mention required
-  const command = content.trim().toLowerCase();
-
-  if (command === "!bot") {
-    await sendRoomMessage(
+  // BOT STATUS
+  if (/^!bot$/i.test(content.trim())) {
+    await sendMessage(
       threadId,
-      `🇵🇰 Assalam-o-Alaikum, Pakistan Community!
-
-I'm your Pakistan Community Bot! 😎
-
-🎮 Truth or Dare
-😂 Jokes and Memes
-🧠 Quizzes and Riddles
-🔮 Daily Horoscope
-🌌 Space and Pakistan Facts
-💬 Ask me anything!
-
-Let's make our community awesome! 🇵🇰❤️`
+      "🇵🇰 Bot is Alive! ✅"
     );
     return;
   }
 
-  if (command === "!bot hello") {
-    await sendRoomMessage(
-      threadId,
-      "Wa-Alaikum-Assalam! 👋🇵🇰 Welcome to Pakistan Community!"
-    );
-    return;
-  }
+  // DIRECT AI QUESTION
+  if (/^!ask(?:\s|$)/i.test(content.trim())) {
+    const question = content.replace(/^!ask\s*/i, "").trim();
 
-  if (command === "!bot joke") {
-    await sendRoomMessage(
-      threadId,
-      "😂 Why did the computer go to the doctor? Because it caught a virus!"
-    );
-    return;
-  }
-
-  if (command === "!bot game") {
-    await sendRoomMessage(
-      threadId,
-      "🎮 Let's play! Choose Truth or Dare from !help."
-    );
-    return;
-  }
-
-  // Respond only when mentioned.
-  if (!content.toLowerCase().includes(BOT_MENTION.toLowerCase())) {
-    return;
-  }
-
-  const message = cleanMessage(content);
-
-  if (!message) {
-    await sendRoomMessage(
-      threadId,
-      "Assalam-o-Alaikum! 🇵🇰 How can I help you?"
-    );
-    return;
-  }
-
-  // LEADER ANNOUNCEMENT
-  if (/^(announce|announcement)\s*:/i.test(message)) {
-    if (!isLeader(author)) {
-      await sendRoomMessage(
+    if (!question) {
+      await sendMessage(
         threadId,
-        "🔒 Announcement broadcasting is reserved for the authorized community leader."
+        "🤖 What would you like to ask me?"
       );
       return;
     }
 
-    const announcement = message
-      .replace(/^(announce|announcement)\s*:/i, "")
-      .trim();
-
-    if (!announcement) {
-      await sendRoomMessage(
-        threadId,
-        "Please write your announcement after 'Announce:'."
-      );
-      return;
-    }
-
-    await sendRoomMessage(
-      threadId,
-      "📢 Your announcement is being sent..."
+    const answer = await askAI(
+      question,
+      userId,
+      threadId
     );
 
-    try {
-      const results = await broadcastAnnouncement(announcement);
-
-      const successful = results.filter(x => x.success).length;
-      const failed = results.length - successful;
-
-      await sendRoomMessage(
-        threadId,
-        `📢 ANNOUNCEMENT REPORT\n\n✅ Sent: ${successful}\n❌ Failed: ${failed}\n\n🇵🇰 Pakistan Community`
-      );
-
-    } catch (error) {
-      await sendRoomMessage(
-        threadId,
-        `😔 Announcement error: ${error.message}`
-      );
-    }
-
+    await sendMessage(threadId, "🤖 " + answer);
     return;
   }
 
-  // RESET MEMORY
-  if (/^(reset memory|reset conversation)$/i.test(message)) {
-    conversations.delete(`${threadId}:${userId}`);
-
-    await sendRoomMessage(
-      threadId,
-      "🧠 Your conversation memory has been reset!"
-    );
-
+  // RESPOND ONLY WHEN MENTIONED
+  if (
+    !content.toLowerCase().includes(
+      BOT_MENTION.toLowerCase()
+    )
+  ) {
     return;
   }
 
-  // HELP
-  if (/^(help|commands)$/i.test(message)) {
-    await sendRoomMessage(
+  const question = cleanMessage(content);
+
+  if (!question) {
+    await sendMessage(
       threadId,
-      `🇵🇰 PAKISTAN COMMUNITY BOT 2.0
-
-Mention me and ask naturally!
-
-Try:
-😂 Tell me a joke
-🧩 Give me a riddle
-🎮 Let's play Truth or Dare
-🧠 Test my knowledge
-🇵🇰 Tell me about Pakistan
-🔭 Give me my horoscope
-🌌 Tell me a space fact
-🖼️ Send me a meme
-📢 Announce: Your message
-
-No points, ranks or leaderboards! ❤️`
+      "🤖 Hello! What can I help you with?"
     );
     return;
   }
 
-  const intent = detectIntent(message);
-
-  if (intent === "meme") {
-    await sendRandomMeme(threadId);
-    return;
-  }
-
-  if (intent === "game") {
-    await sendRoomMessage(
-      threadId,
-      getGameMenu().content,
-      {
-        components: getGameMenu().components
-      }
-    );
-    return;
-  }
-
-  if (intent === "quiz") {
-    await sendRoomMessage(threadId, makeQuiz());
-    return;
-  }
-
-  if (intent === "horoscope") {
-    const sign = message
-      .replace(/horoscope|zodiac|today|my|please/gi, "")
-      .trim();
-
-    await sendRoomMessage(
-      threadId,
-      getHoroscope(sign)
-    );
-    return;
-  }
-
-  if (intent === "space") {
-    await sendRoomMessage(
-      threadId,
-      "🌌 SPACE FACT\n\n" + randomItem(spaceFacts)
-    );
-    return;
-  }
-
-  // AI CONVERSATION
   const answer = await askAI(
-    message,
+    question,
     userId,
     threadId
   );
 
-  await sendRoomMessage(
-    threadId,
-    "🤖 " + answer
-  );
-}
-
-// =====================================
-// COMPONENT BUTTONS
-// =====================================
-
-async function processComponent(event) {
-  const data = event.data || {};
-  const button = data.component_id;
-  const threadId = data.thread_id;
-  const messageId = data.message_id;
-
-  if (!threadId) return;
-
-  let reply = "";
-
-  if (button === "truth") {
-    reply = "🔥 TRUTH TIME!\n\n" + randomItem(truths);
-  }
-
-  if (button === "dare") {
-    reply = "😈 DARE TIME!\n\n" + randomItem(dares);
-  }
-
-  if (button === "quiz") {
-    reply = makeQuiz();
-  }
-
-  if (!reply) return;
-
-  if (messageId) {
-    try {
-      await fetch(
-        `${API}/messages/${messageId}`,
-        {
-          method: "PATCH",
-          headers: {
-            Authorization: `Bot ${TOKEN}`,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            content: "🇵🇰 GAME CHALLENGE SELECTED! 🎉",
-            components: []
-          })
-        }
-      );
-    } catch (error) {
-      console.error("Button update:", error.message);
-    }
-  }
-
-  await sendRoomMessage(threadId, reply);
+  await sendMessage(threadId, "🤖 " + answer);
 }
 
 // =====================================
@@ -820,11 +265,18 @@ async function processComponent(event) {
 // =====================================
 
 app.get("/", (req, res) => {
-  res.send("🇵🇰 Pakistan Community Bot 2.0 is running!");
+  res.send("🇵🇰 Pakistan Community Bot is running!");
+});
+
+app.get("/health", (req, res) => {
+  res.json({
+    status: "online",
+    ai: Boolean(OPENAI_API_KEY)
+  });
 });
 
 // =====================================
-// WEBHOOK
+// DUCKS WEBHOOK
 // =====================================
 
 app.post(
@@ -835,22 +287,10 @@ app.post(
   }),
   (req, res) => {
     try {
-      // DIAGNOSTIC LOGGING
-      console.log("========== WEBHOOK RECEIVED ==========");
-      console.log("Time:", new Date().toISOString());
-      console.log("Content-Type:", req.headers["content-type"]);
-      console.log("Signature present:", !!req.headers["x-ducks-signature"]);
-      console.log("Timestamp present:", !!req.headers["x-ducks-timestamp"]);
-      console.log("Body received:", !!req.body);
-
-      const signature =
-        req.headers["x-ducks-signature"];
-
-      const timestamp =
-        req.headers["x-ducks-timestamp"];
+      const signature = req.headers["x-ducks-signature"];
+      const timestamp = req.headers["x-ducks-timestamp"];
 
       if (!signature || !timestamp || !req.body) {
-        console.log("Webhook rejected: missing headers or body");
         return res.sendStatus(401);
       }
 
@@ -860,16 +300,12 @@ app.post(
         !Number.isFinite(time) ||
         Math.abs(Date.now() / 1000 - time) > 300
       ) {
-        console.log("Webhook rejected: invalid timestamp");
         return res.sendStatus(401);
       }
 
       const publicKey = crypto.createPublicKey({
         key: Buffer.concat([
-          Buffer.from(
-            "302a300506032b6570032100",
-            "hex"
-          ),
+          Buffer.from("302a300506032b6570032100", "hex"),
           Buffer.from(PUBLIC_KEY, "hex")
         ]),
         format: "der",
@@ -889,24 +325,15 @@ app.post(
       );
 
       if (!valid) {
-        console.log("Webhook rejected: invalid signature");
         return res.sendStatus(401);
       }
 
-      const event = JSON.parse(
-        req.body.toString("utf8")
-      );
-
-      console.log("Event type:", event.type);
-      console.log("Event ID:", event.id || "Unavailable");
-      console.log("======================================");
+      const event = JSON.parse(req.body.toString("utf8"));
 
       // PING
       if (event.type === "ping") {
-        console.log("PING RECEIVED:", event.data?.nonce);
-
         return res.status(200).json({
-          nonce: event.data.nonce
+          nonce: event.data?.nonce
         });
       }
 
@@ -919,53 +346,22 @@ app.post(
       }
 
       if (eventId) {
-        processedEvents.add(eventId);
+        processedEvents.set(eventId, Date.now());
 
-        if (processedEvents.size > 5000) {
-          processedEvents.clear();
+        if (processedEvents.size > MAX_EVENTS) {
+          processedEvents.delete(
+            processedEvents.keys().next().value
+          );
         }
       }
 
-      // COMMAND EVENTS
+      // MESSAGE EVENTS
       if (event.type === "command") {
-        const content = event.data?.content || "";
-
-        if (
-          content.toLowerCase().includes(
-            BOT_MENTION.toLowerCase()
-          )
-        ) {
-          console.log("BOT MENTION:", content);
-
-          logAuthorInformation(
-            event.data.author || {}
-          );
-        }
-
         res.sendStatus(200);
 
         setImmediate(() => {
           processCommand(event).catch(error => {
-            console.error(
-              "Command processing error:",
-              error.message
-            );
-          });
-        });
-
-        return;
-      }
-
-      // COMPONENT BUTTON EVENTS
-      if (event.type === "component_click") {
-        res.sendStatus(200);
-
-        setImmediate(() => {
-          processComponent(event).catch(error => {
-            console.error(
-              "Component error:",
-              error.message
-            );
+            console.error("Command error:", error.message);
           });
         });
 
@@ -975,11 +371,7 @@ app.post(
       return res.sendStatus(200);
 
     } catch (error) {
-      console.error(
-        "Webhook error:",
-        error.message
-      );
-
+      console.error("Webhook error:", error.message);
       return res.sendStatus(400);
     }
   }
@@ -991,7 +383,7 @@ app.post(
 
 app.listen(PORT, async () => {
   console.log(
-    `🇵🇰 Pakistan Community Bot 2.0 running on ${PORT}`
+    `🇵🇰 Pakistan Community Bot running on port ${PORT}`
   );
 
   if (!TOKEN) {
@@ -1011,20 +403,10 @@ app.listen(PORT, async () => {
       }
     );
 
-    console.log(
-      "Webhook verification HTTP status:",
-      response.status
-    );
-
-    console.log(
-      "Webhook verification response:",
-      await response.text()
-    );
+    console.log("Webhook verification:", response.status);
+    console.log(await response.text());
 
   } catch (error) {
-    console.error(
-      "Webhook verification error:",
-      error.message
-    );
+    console.error("Verification error:", error.message);
   }
 });
