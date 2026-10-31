@@ -68,7 +68,9 @@ function verifySignature(headers, rawBody) {
 }
 
 async function ducksRequest(path, options = {}) {
-  if (!BOT_TOKEN) throw new Error("Missing DUCKS_BOT_TOKEN");
+  if (!BOT_TOKEN) {
+    throw new Error("Missing DUCKS_BOT_TOKEN");
+  }
 
   const response = await fetch(`${DUCKS_API}${path}`, {
     ...options,
@@ -97,8 +99,10 @@ async function sendMessage(threadId, content, replyTo = null) {
   if (replyTo) body.reply_to = replyTo;
 
   for (let attempt = 0; attempt < 3; attempt++) {
+    let response;
+
     try {
-      const response = await fetch(
+      response = await fetch(
         `${DUCKS_API}/rooms/${threadId}/messages`,
         {
           method: "POST",
@@ -109,38 +113,48 @@ async function sendMessage(threadId, content, replyTo = null) {
           body: JSON.stringify(body)
         }
       );
-
-      if (response.ok) return;
-
-      const errorText = await response.text();
-
-      if (
-        response.status !== 429 &&
-        response.status !== 503
-      ) {
-        throw new Error(
-          `Message error ${response.status}: ${errorText}`
-        );
-      }
-
-      if (attempt === 2) {
-        throw new Error(errorText);
-      }
-
-      let delay = 1500;
-
-      try {
-        const parsed = JSON.parse(errorText);
-        if (parsed.retry_after) {
-          delay = Math.max(1000, parsed.retry_after * 1000);
-        }
-      } catch {}
-
-      await new Promise(resolve => setTimeout(resolve, delay));
     } catch (error) {
       if (attempt === 2) throw error;
-      await new Promise(resolve => setTimeout(resolve, 1500));
+
+      await new Promise(resolve =>
+        setTimeout(resolve, 1500)
+      );
+
+      continue;
     }
+
+    if (response.ok) return;
+
+    const errorText = await response.text();
+
+    if (
+      response.status !== 429 &&
+      response.status !== 503
+    ) {
+      throw new Error(
+        `Message error ${response.status}: ${errorText}`
+      );
+    }
+
+    if (attempt === 2) {
+      throw new Error(
+        `Message error ${response.status}: ${errorText}`
+      );
+    }
+
+    let delay = 1500;
+
+    try {
+      const parsed = JSON.parse(errorText);
+
+      if (parsed.retry_after) {
+        delay = Math.max(1000, parsed.retry_after * 1000);
+      }
+    } catch {}
+
+    await new Promise(resolve =>
+      setTimeout(resolve, delay)
+    );
   }
 }
 
@@ -148,7 +162,9 @@ function getCommand(content) {
   const text = String(content || "").trim();
   const lower = text.toLowerCase();
 
-  if (lower === "!bot") return { type: "alive" };
+  if (lower === "!bot") {
+    return { type: "alive" };
+  }
 
   if (lower.startsWith("!ask ")) {
     return {
@@ -199,20 +215,17 @@ function needsWebSearch(question, history) {
     q.includes(word)
   );
 
-  const previousContext = history.length > 0;
-
   return (
     searchWords.some(word => q.includes(word)) ||
-    (hasFollowUp && previousContext)
+    (hasFollowUp && history.length > 0)
   );
 }
 
 async function webSearch(question, history) {
   if (!TAVILY_KEY) {
-    return {
-      results: [],
-      message: "Web search is not configured."
-    };
+    console.log("Tavily key missing; skipping web search.");
+
+    return null;
   }
 
   let context = "";
@@ -245,21 +258,22 @@ async function webSearch(question, history) {
 
   if (!response.ok) {
     const error = await response.text();
-    throw new Error(`Tavily error ${response.status}: ${error}`);
+
+    throw new Error(
+      `Tavily error ${response.status}: ${error}`
+    );
   }
 
   const data = await response.json();
 
-  const results = (data.results || []).map(item => ({
-    title: item.title,
-    url: item.url,
-    content: item.content,
-    score: item.score
-  }));
-
   return {
     answer: data.answer || "",
-    results
+    results: (data.results || []).map(item => ({
+      title: item.title,
+      url: item.url,
+      content: item.content,
+      score: item.score
+    }))
   };
 }
 
@@ -269,7 +283,7 @@ async function askAI(history, question, searchData) {
   }
 
   const systemPrompt = `
-You are Pakistan Community AI 5.0.
+You are Pakistan Community AI 5.1.
 
 You are a friendly, intelligent and helpful assistant
 for Pakistan Community.
@@ -330,12 +344,17 @@ Keep answers organized and easy to read.
 
   if (!response.ok) {
     const error = await response.text();
-    throw new Error(`OpenAI error ${response.status}: ${error}`);
+
+    throw new Error(
+      `OpenAI error ${response.status}: ${error}`
+    );
   }
 
   const data = await response.json();
 
-  if (data.output_text) return data.output_text;
+  if (data.output_text) {
+    return data.output_text;
+  }
 
   const text = (data.output || [])
     .flatMap(item => item.content || [])
@@ -343,7 +362,9 @@ Keep answers organized and easy to read.
     .map(item => item.text)
     .join("\n");
 
-  if (!text) throw new Error("AI returned an empty response");
+  if (!text) {
+    throw new Error("AI returned an empty response");
+  }
 
   return text;
 }
@@ -369,19 +390,22 @@ async function processAI(event, question) {
     let searchData = null;
 
     if (needsWebSearch(question, history)) {
-      await sendMessage(
-        data.thread_id,
-        "🔎 Searching the web and researching your question..."
-      );
-
       try {
+        // Search silently. No announcement is sent to Ducks.
+        console.log("Starting Tavily web search.");
+
         searchData = await webSearch(question, history);
+
+        if (searchData) {
+          console.log(
+            `Tavily returned ${searchData.results.length} results.`
+          );
+        }
       } catch (error) {
         console.error("Web search failed:", error.message);
-        searchData = {
-          results: [],
-          message: "Web search failed. Do not invent current information."
-        };
+
+        // Continue the AI conversation if search fails.
+        searchData = null;
       }
     }
 
@@ -415,21 +439,28 @@ async function processAI(event, question) {
   } catch (error) {
     console.error("AI processing error:", error);
 
-    await sendMessage(
-      data.thread_id,
-      "Sorry! I encountered a problem while processing your question. Please try again."
-    ).catch(console.error);
+    try {
+      await sendMessage(
+        data.thread_id,
+        "Sorry! I encountered a problem while processing your question. Please try again."
+      );
+    } catch (sendError) {
+      console.error(
+        "Could not send error response:",
+        sendError.message
+      );
+    }
   }
 }
 
 app.get("/", (req, res) => {
-  res.send("Pakistan Community AI 5.0 is running 🇵🇰");
+  res.send("Pakistan Community AI 5.1 is running 🇵🇰");
 });
 
 app.get("/health", (req, res) => {
   res.json({
     status: "online",
-    version: "5.0",
+    version: "5.1",
     ducksConfigured: Boolean(BOT_TOKEN),
     openaiConfigured: Boolean(OPENAI_KEY),
     tavilyConfigured: Boolean(TAVILY_KEY),
@@ -459,6 +490,8 @@ app.post("/webhook", (req, res) => {
   const eventId = req.headers["x-ducks-event-id"];
 
   if (event.type === "ping") {
+    console.log("Ducks verification ping received");
+
     return res.status(200).json({
       nonce: event.data?.nonce
     });
@@ -472,7 +505,6 @@ app.post("/webhook", (req, res) => {
     processedEvents.set(eventId, Date.now());
   }
 
-  // Keep the event response fast.
   res.status(200).json({});
 
   setImmediate(async () => {
@@ -488,6 +520,7 @@ app.post("/webhook", (req, res) => {
             "🇵🇰 Bot is Alive! ✅",
             event.data.message_id
           );
+
           return;
         }
 
@@ -526,7 +559,10 @@ app.post("/webhook", (req, res) => {
       }
 
     } catch (error) {
-      console.error("Webhook background error:", error);
+      console.error(
+        "Webhook background error:",
+        error.message
+      );
     }
   });
 });
@@ -548,17 +584,27 @@ setInterval(() => {
 }, 60 * 1000);
 
 app.listen(PORT, () => {
-  console.log(`Pakistan Community AI 5.0 running on ${PORT}`);
+  console.log(
+    `Pakistan Community AI 5.1 running on ${PORT}`
+  );
 
   if (BOT_TOKEN) {
+    console.log("Starting Ducks webhook verification...");
+
     ducksRequest("/webhook/verify", {
       method: "POST"
     })
       .then(result => {
-        console.log("Webhook verification result:", result);
+        console.log(
+          "Webhook verification result:",
+          result
+        );
       })
       .catch(error => {
-        console.error("Webhook verification failed:", error.message);
+        console.error(
+          "Webhook verification failed:",
+          error.message
+        );
       });
   }
 });
