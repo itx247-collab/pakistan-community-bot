@@ -123,24 +123,26 @@ async function sendMessage(threadId, content, replyTo = null) {
       continue;
     }
 
-    if (response.ok) return;
+if (response.ok) return;
 
-    const errorText = await response.text();
+const errorText = await response.text();
 
-    if (
-      response.status !== 429 &&
-      response.status !== 503
-    ) {
-      throw new Error(
-        `Message error ${response.status}: ${errorText}`
-      );
-    }
+if (response.status === 403) {
+  console.log("DUCKS REJECTED MESSAGE:", JSON.stringify({
+    status: response.status,
+    content: String(message.content || "").slice(0, 1000),
+    error: errorText
+  }));
+}
 
-    if (attempt === 2) {
-      throw new Error(
-        `Message error ${response.status}: ${errorText}`
-      );
-    }
+if (
+  response.status !== 429 &&
+  response.status !== 503
+) {
+  throw new Error(
+    `Message error ${response.status}: ${errorText}`
+  );
+}
 
     let delay = 1500;
 
