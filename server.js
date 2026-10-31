@@ -99,7 +99,7 @@ async function ducksRequest(path, options = {}) {
 }
 
 // ==========================================
-// SEND MESSAGE WITH LINK FALLBACK
+// SEND NORMAL MESSAGE WITH LINK FALLBACK
 // ==========================================
 
 async function sendMessage(threadId, content, replyTo = null) {
@@ -116,7 +116,11 @@ async function sendMessage(threadId, content, replyTo = null) {
     messagesToTry.push(safeContent);
   }
 
-  for (let messageIndex = 0; messageIndex < messagesToTry.length; messageIndex++) {
+  for (
+    let messageIndex = 0;
+    messageIndex < messagesToTry.length;
+    messageIndex++
+  ) {
     const body = {
       content: messagesToTry[messageIndex],
       nonce: crypto.randomUUID()
@@ -222,6 +226,58 @@ async function sendMessage(threadId, content, replyTo = null) {
 }
 
 // ==========================================
+// DIRECT LINK TEST - BYPASSES FALLBACK
+// ==========================================
+
+async function sendLinkTest(threadId) {
+  console.log("Starting direct URL test...");
+
+  const body = {
+    content: "https://www.google.com",
+    nonce: crypto.randomUUID()
+  };
+
+  const response = await fetch(
+    `${DUCKS_API}/rooms/${threadId}/messages`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bot ${BOT_TOKEN}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(body)
+    }
+  );
+
+  const responseText = await response.text();
+
+  if (response.ok) {
+    console.log("LINK TEST SUCCESS: Ducks accepted the URL.");
+
+    await sendMessage(
+      threadId,
+      "✅ Link test successful! Ducks accepted a separate message containing a URL."
+    );
+
+    return;
+  }
+
+  console.log(
+    "LINK TEST FAILED:",
+    JSON.stringify({
+      status: response.status,
+      content: body.content,
+      error: responseText
+    })
+  );
+
+  await sendMessage(
+    threadId,
+    `❌ Link test failed. Ducks rejected the URL. HTTP status: ${response.status}. Check the Render logs for details.`
+  );
+}
+
+// ==========================================
 // COMMAND RECOGNITION
 // ==========================================
 
@@ -231,6 +287,10 @@ function getCommand(content) {
 
   if (lower === "!bot") {
     return { type: "alive" };
+  }
+
+  if (lower === "!linktest") {
+    return { type: "linktest" };
   }
 
   if (lower.startsWith("!ask ")) {
@@ -547,7 +607,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     status: "online",
-    version: "5.2",
+    version: "5.2-linktest",
     ducksConfigured: Boolean(BOT_TOKEN),
     openaiConfigured: Boolean(OPENAI_KEY),
     tavilyConfigured: Boolean(TAVILY_KEY),
@@ -612,6 +672,11 @@ app.post("/webhook", (req, res) => {
             event.data.message_id
           );
 
+          return;
+        }
+
+        if (command.type === "linktest") {
+          await sendLinkTest(event.data.thread_id);
           return;
         }
 
@@ -684,7 +749,7 @@ setInterval(() => {
 
 app.listen(PORT, () => {
   console.log(
-    `Pakistan Community AI 5.2 running on ${PORT}`
+    `Pakistan Community AI 5.2 link test running on ${PORT}`
   );
 
   if (BOT_TOKEN) {
