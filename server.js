@@ -37,6 +37,10 @@ const processedEvents = new Map();
 const MAX_HISTORY = 8;
 const MEMORY_TIME = 30 * 60 * 1000;
 
+// ==========================================
+// DUCKS WEBHOOK SIGNATURE VERIFICATION
+// ==========================================
+
 function verifySignature(headers, rawBody) {
   try {
     const signature = headers["x-ducks-signature"];
@@ -67,6 +71,10 @@ function verifySignature(headers, rawBody) {
   }
 }
 
+// ==========================================
+// DUCKS API REQUEST
+// ==========================================
+
 async function ducksRequest(path, options = {}) {
   if (!BOT_TOKEN) {
     throw new Error("Missing DUCKS_BOT_TOKEN");
@@ -90,75 +98,132 @@ async function ducksRequest(path, options = {}) {
   return text ? JSON.parse(text) : {};
 }
 
+// ==========================================
+// SEND MESSAGE WITH LINK FALLBACK
+// ==========================================
+
 async function sendMessage(threadId, content, replyTo = null) {
-  const body = {
-    content,
-    nonce: crypto.randomUUID()
-  };
+  const originalContent = String(content || "");
 
-  if (replyTo) body.reply_to = replyTo;
+  const safeContent = originalContent
+    .replace(/\[([^\]]+)\]\(https?:\/\/[^)]+\)/gi, "$1")
+    .replace(/https?:\/\/\S+/gi, "")
+    .trim();
 
-  for (let attempt = 0; attempt < 3; attempt++) {
-    let response;
+  const messagesToTry = [originalContent];
 
-    try {
-      response = await fetch(
-        `${DUCKS_API}/rooms/${threadId}/messages`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bot ${BOT_TOKEN}`,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify(body)
-        }
-      );
-    } catch (error) {
-      if (attempt === 2) throw error;
+  if (safeContent !== originalContent && safeContent) {
+    messagesToTry.push(safeContent);
+  }
 
-      await new Promise(resolve =>
-        setTimeout(resolve, 1500)
-      );
+  for (let messageIndex = 0; messageIndex < messagesToTry.length; messageIndex++) {
+    const body = {
+      content: messagesToTry[messageIndex],
+      nonce: crypto.randomUUID()
+    };
 
-      continue;
+    if (replyTo) {
+      body.reply_to = replyTo;
     }
 
-if (response.ok) return;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let response;
 
-const errorText = await response.text();
+      try {
+        response = await fetch(
+          `${DUCKS_API}/rooms/${threadId}/messages`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bot ${BOT_TOKEN}`,
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify(body)
+          }
+        );
+      } catch (error) {
+        if (attempt === 2) throw error;
 
-if (response.status === 403) {
-  console.log("DUCKS REJECTED MESSAGE:", JSON.stringify({
-    status: response.status,
-    content: String(content || "").slice(0, 1000),
-    error: errorText
-  }));
-}
+        await new Promise(resolve =>
+          setTimeout(resolve, 1500)
+        );
 
-if (
-  response.status !== 429 &&
-  response.status !== 503
-) {
-  throw new Error(
-    `Message error ${response.status}: ${errorText}`
-  );
-}
-
-    let delay = 1500;
-
-    try {
-      const parsed = JSON.parse(errorText);
-
-      if (parsed.retry_after) {
-        delay = Math.max(1000, parsed.retry_after * 1000);
+        continue;
       }
-    } catch {}
 
-    await new Promise(resolve =>
-      setTimeout(resolve, delay)
-    );
+      if (response.ok) {
+        if (messageIndex === 1) {
+          console.log("Message successfully sent without links.");
+        }
+
+        return;
+      }
+
+      const errorText = await response.text();
+
+      if (response.status === 403) {
+        console.log(
+          "DUCKS REJECTED MESSAGE:",
+          JSON.stringify({
+            status: response.status,
+            content: messagesToTry[messageIndex].slice(0, 1000),
+            error: errorText
+          })
+        );
+
+        if (
+          messageIndex === 0 &&
+          errorText.includes("content_not_allowed") &&
+          messagesToTry.length > 1
+        ) {
+          console.log("Retrying message without links...");
+          break;
+        }
+
+        throw new Error(
+          `Message error ${response.status}: ${errorText}`
+        );
+      }
+
+      if (
+        response.status !== 429 &&
+        response.status !== 503
+      ) {
+        throw new Error(
+          `Message error ${response.status}: ${errorText}`
+        );
+      }
+
+      let delay = 1500;
+
+      try {
+        const parsed = JSON.parse(errorText);
+
+        if (parsed.retry_after) {
+          delay = Math.max(1000, parsed.retry_after * 1000);
+        }
+      } catch {}
+
+      console.log(`Ducks retry in ${delay}ms`);
+
+      if (attempt === 2) {
+        throw new Error(
+          `Message failed after retries: ${errorText}`
+        );
+      }
+
+      await new Promise(resolve =>
+        setTimeout(resolve, delay)
+      );
+    }
   }
+
+  throw new Error("Unable to send message.");
 }
+
+// ==========================================
+// COMMAND RECOGNITION
+// ==========================================
 
 function getCommand(content) {
   const text = String(content || "").trim();
@@ -190,6 +255,10 @@ function getCommand(content) {
 
   return null;
 }
+
+// ==========================================
+// WEB SEARCH DETECTION
+// ==========================================
 
 function needsWebSearch(question, history) {
   const q = question.toLowerCase();
@@ -223,10 +292,13 @@ function needsWebSearch(question, history) {
   );
 }
 
+// ==========================================
+// TAVILY WEB SEARCH
+// ==========================================
+
 async function webSearch(question, history) {
   if (!TAVILY_KEY) {
     console.log("Tavily key missing; skipping web search.");
-
     return null;
   }
 
@@ -279,13 +351,17 @@ async function webSearch(question, history) {
   };
 }
 
+// ==========================================
+// OPENAI AI RESPONSE
+// ==========================================
+
 async function askAI(history, question, searchData) {
   if (!OPENAI_KEY) {
     throw new Error("Missing OPENAI_API_KEY");
   }
 
   const systemPrompt = `
-You are Pakistan Community AI 5.1.
+You are Pakistan Community AI 5.2.
 
 You are a friendly, intelligent and helpful assistant
 for Pakistan Community.
@@ -300,7 +376,9 @@ Personality:
 Research rules:
 - Use supplied web research when available.
 - Explain information in your own words.
-- Include useful source links from the supplied results.
+- Explain sources by their names.
+- Do not include URLs or Markdown links in messages.
+- Never generate clickable links.
 - Distinguish verified facts from uncertain information.
 - Prices and availability can change; mention this.
 - Never claim a product is PTA approved unless a source
@@ -371,6 +449,10 @@ Keep answers organized and easy to read.
   return text;
 }
 
+// ==========================================
+// MAIN AI PROCESSING
+// ==========================================
+
 async function processAI(event, question) {
   const data = event.data;
 
@@ -393,7 +475,6 @@ async function processAI(event, question) {
 
     if (needsWebSearch(question, history)) {
       try {
-        // Search silently. No announcement is sent to Ducks.
         console.log("Starting Tavily web search.");
 
         searchData = await webSearch(question, history);
@@ -405,8 +486,6 @@ async function processAI(event, question) {
         }
       } catch (error) {
         console.error("Web search failed:", error.message);
-
-        // Continue the AI conversation if search fails.
         searchData = null;
       }
     }
@@ -438,6 +517,8 @@ async function processAI(event, question) {
       data.message_id
     );
 
+    console.log("AI answer successfully sent.");
+
   } catch (error) {
     console.error("AI processing error:", error);
 
@@ -455,20 +536,28 @@ async function processAI(event, question) {
   }
 }
 
+// ==========================================
+// MAIN ROUTES
+// ==========================================
+
 app.get("/", (req, res) => {
-  res.send("Pakistan Community AI 5.1 is running 🇵🇰");
+  res.send("Pakistan Community AI 5.2 is running 🇵🇰");
 });
 
 app.get("/health", (req, res) => {
   res.json({
     status: "online",
-    version: "5.1",
+    version: "5.2",
     ducksConfigured: Boolean(BOT_TOKEN),
     openaiConfigured: Boolean(OPENAI_KEY),
     tavilyConfigured: Boolean(TAVILY_KEY),
     model: MODEL
   });
 });
+
+// ==========================================
+// DUCKS WEBHOOK
+// ==========================================
 
 app.post("/webhook", (req, res) => {
   const rawBody = req.body;
@@ -569,6 +658,10 @@ app.post("/webhook", (req, res) => {
   });
 });
 
+// ==========================================
+// MEMORY CLEANUP
+// ==========================================
+
 setInterval(() => {
   const now = Date.now();
 
@@ -585,9 +678,13 @@ setInterval(() => {
   }
 }, 60 * 1000);
 
+// ==========================================
+// SERVER START
+// ==========================================
+
 app.listen(PORT, () => {
   console.log(
-    `Pakistan Community AI 5.1 running on ${PORT}`
+    `Pakistan Community AI 5.2 running on ${PORT}`
   );
 
   if (BOT_TOKEN) {
